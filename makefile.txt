@@ -1,0 +1,17 @@
+CC=clang
+
+list = PNG.o PICT.o
+
+EXR_channel: $(list)
+	$(CC) -o pict_png -lz $(list)
+
+# ====
+PNG.o: PNG.c
+	$(CC) -c PNG.c
+
+PICT.o: PICT.c PICT.h
+	$(CC) -c PICT.c
+
+# ==== CLEAN
+clean:	
+	rm $(list)
