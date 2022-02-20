@@ -23,7 +23,7 @@
 
 #define kTHANH_PHAN__LOAI_IEND 0x49454E44
 
-#define kCO_THUOC_TOI_DA_IDAT  8192   // cờ thước tối đa khi chẻ thành phần IDAT
+#define kCO_THUOC_TOI_DA_IDAT  8192   // cỡ thước tối đa khi chẻ thành phần IDAT
 #define kKHO_ANH_TOI_DA 8192   // khổ điểm ảnh lớn tối đa
 #define kZLIB_MUC_NEN 6        // hỉnh như số này là chuẩn ưa dùng
 

@@ -19,3 +19,6 @@ typedef struct {
 /* đọc tệp PICT */
 image_data decode_pict( const char *sfile );
 
+/* lưu tệp PICT */
+void encode_pict( const char *sfile, image_data *image );
+

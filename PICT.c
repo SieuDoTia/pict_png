@@ -19,7 +19,8 @@ Image data after head
 
    (26 btyes)
    2 bytes  | ushort | HEAD_OP     | Head opocde, for version 2.0 should equal 0x0c00
-   2 bytes  | ushort | CODE        | for version 2.0 should equal 0xffef or 0xffee
+   2 bytes  | ushort | CODE        | for version 2.0 should equal 0xffef or 0xffee but some time 0xffff
+   2 bytes  | ushort | ????        | Equal 0xfffff or 0x0000
    4 bytes  | uint   | RESOLUT_X   | Resolution horizontal (pixel/inch, divide 2.54 for cm)
    4 bytes  | uint   | RESOLUT_Y   | Resolution vertical (pixel/inch, divide 2.54 for cm)
    2 bytes  | ushort | FRAME_LEFT  | Frame left
@@ -47,6 +48,9 @@ Image data after head
 
 #define kFILE_TYPE__VERSION_2    0x0011
 #define kVERSION_CODE__VERSION_2 0x02ff
+
+#define kPICT  1
+#define kPNG   2
 
 // ---- op code list
 #define OP_CODE__NO_OP   0x0000     // +0
@@ -165,13 +169,16 @@ chunk_data create_chunk_table( unsigned int table_length ) {
 
 #pragma mark ---- Read Chunk Data
 // for read tile of file
-void read_chunk_data( FILE *pict_fp, chunk_data *chunk_data, unsigned int table_start, unsigned int length ) {
-
+void read_chunk_data( FILE *pict_fp, chunk_data *chunk_data, unsigned int table_start, unsigned int length, unsigned char twoByte ) {
+   printf( "twoByte %d\n", twoByte );
    unsigned short dataLength = 0;
    unsigned short chunk_index = table_start;
    unsigned short end = table_start + length;
    while( chunk_index < end ) {
-      dataLength = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+      if( twoByte )
+         dataLength = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+      else
+         dataLength = fgetc(pict_fp);
 
       if( dataLength > 0 ) {
          chunk_data->chunk_size[chunk_index] = dataLength;
@@ -216,7 +223,7 @@ void uncompress_rle( char *compressed_buffer, int compressed_buffer_length, unsi
          // ---- if count larger than out buffer length still available
          if (0 > (uncompressed_buffer_length -= count)) {
             printf( "  uncompress_rle: Error buffer not length not enough. Have %d but need %d\n", uncompressed_buffer_length, count );
-         //   exit(0);
+            exit(0);
             return;
          }
          // ---- copy not same byte and move to next byte
@@ -234,7 +241,7 @@ void uncompress_rle( char *compressed_buffer, int compressed_buffer_length, unsi
          // ---- if count larger than out buffer length still available
          if (0 > (uncompressed_buffer_length -= count)) {
             printf( "  uncompress_rle: Error buffer not length not enough. Have %d but need %d\n", uncompressed_buffer_length, count );
-          //  exit(0);
+            exit(0);
             return;
          }
          // ---- copy same byte
@@ -259,9 +266,6 @@ void copyBufferUchar( unsigned char *destination, unsigned char *ucharSource, un
       index++;
    }
 }
-
-
-#pragma mark ---- No Compression
 
 
 #pragma mark ---- RLE Compression
@@ -329,7 +333,7 @@ void read_data_compression_rle__scanline( FILE *pict_fp, chunk_data *chunk_data,
          
          if( componentCount == 3 )
             image_data->channel_O[channelDataIndex] = 0xff;
-         else
+         else if( componentCount == 4 )
             image_data->channel_O[channelDataIndex] = uncompressed_buffer[bufferIndexO];
 
          bufferIndexR++;
@@ -350,7 +354,278 @@ void read_data_compression_rle__scanline( FILE *pict_fp, chunk_data *chunk_data,
    free( uncompressed_buffer );
 }
 
+// ---- Hàm từ thư viện OpenEXR của ILM
+#define MIN_RUN_LENGTH   3
+#define MAX_RUN_LENGTH 127
+unsigned int compress_chunk_RLE(unsigned char *in, unsigned int inLength, unsigned char *out ) {
+   const unsigned char *inEnd = in + inLength;
+   const unsigned char *runStart = in;
+   const unsigned char *runEnd = in + 1;
+   unsigned char *outWrite = out;
+   
+   // ---- while not at end of in buffer
+   while (runStart < inEnd) {
+      
+      // ---- count number bytes same value; careful not go beyond end of chunk, or chunk longer than MAX_RUN_LENGTH
+      while (runEnd < inEnd && *runStart == *runEnd && runEnd - runStart - 1 < MAX_RUN_LENGTH) {
+         ++runEnd;
+      }
+      // ---- if number bytes same value >= MIN_RUN_LENGTH
+      if (runEnd - runStart >= MIN_RUN_LENGTH) {
+         //
+         // Compressable run
+         //
+         // ---- number bytes same value - 1
+         char count = (runEnd - runStart) - 1;
+         *outWrite++ = -count;
+         // ---- byte value
+         *outWrite++ = *(signed char *) runStart;
+         // ---- move to where different value found or MAX_RUN_LENGTH
+         runStart = runEnd;
+      }
+      else {
+         //
+         // Uncompressable run
+         //
+         // ---- count number of bytes not same; careful end of chunk,
+         while (runEnd < inEnd &&
+                ((runEnd + 1 >= inEnd || *runEnd != *(runEnd + 1)) || (runEnd + 2 >= inEnd || *(runEnd + 1) != *(runEnd + 2))) &&
+                runEnd - runStart < MAX_RUN_LENGTH) {
+            ++runEnd;
+         }
+         // ---- number bytes not same
+         *outWrite++ = runEnd - runStart - 1;
+         // ---- not same bytes
+         while (runStart < runEnd) {
+            *outWrite++ = *(signed char *) (runStart++);
+         }
+      }
+      // ---- move to next byte
+      ++runEnd;
+   }
+   
+   return outWrite - out;
+}
 
+#pragma mark ---- OpCode Frame
+void opCodeFrame( FILE *pict_fp, unsigned short top, unsigned short left, unsigned short bottom, unsigned short right ) {
+
+   // ---- op code number 0x0001
+   fputc( 0x00, pict_fp );
+   fputc( 0x01, pict_fp );
+   
+   // ---- size (include this ushort)
+   fputc( 0x00, pict_fp );
+   fputc( 0x0a, pict_fp );
+   
+   // ---- top
+   fputc( top >> 8, pict_fp );
+   fputc( top & 0xff, pict_fp );
+   // ---- left
+   fputc( left >> 8, pict_fp );
+   fputc( left & 0xff, pict_fp );
+   // ---- bottom
+   fputc( bottom >> 8, pict_fp );
+   fputc( bottom & 0xff, pict_fp );
+   // ---- right
+   fputc( right >> 8, pict_fp );
+   fputc( right & 0xff, pict_fp );
+}
+
+#pragma mark ---- OpCode PixMap
+void opCodePixMap( FILE *pict_fp, image_data *image ) {
+
+   // ---- image frame
+   unsigned short right = image->width;
+   unsigned short bottom = image->height;
+
+   // ---- op code number 0x009a PixMap
+   fputc( 0x00, pict_fp );
+   fputc( 0x9a, pict_fp );
+   
+   // ---- pixMap (50 byte)  page 4-46 Imaging With Quickdraw year 1994
+   // ---- baseAddr 4 byte
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0xff, pict_fp );
+   
+   // ---- rowBytes 2 byte
+   unsigned short rowBytes = right << 2;
+   
+   unsigned char twoByte = 0x01;
+   if( rowBytes < 250 )
+      twoByte = 0;
+
+   rowBytes |= 0x8000;  // add pixMap flag
+   fputc( rowBytes >> 8, pict_fp );
+   fputc( rowBytes & 0xff, pict_fp );
+
+   // ---- frame
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( bottom >> 8, pict_fp );
+   fputc( bottom & 0xff, pict_fp );
+   fputc( right >> 8, pict_fp );
+   fputc( right & 0xff, pict_fp );
+
+   // ---- pixMapVersion 2 
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- packType  2 bytes
+   fputc( 0x00, pict_fp );
+   fputc( 0x04, pict_fp );
+   
+   //  ---- packSize     4 bytes
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- resolution x (fix point 16.16)
+   fputc( 0x00, pict_fp );
+   fputc( 0x48, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+
+   // ---- resolution y (fix point 16.16)
+   fputc( 0x00, pict_fp );
+   fputc( 0x48, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- pixelType (0 == index; 16 = direct)
+   fputc( 0x00, pict_fp );
+   fputc( 0x10, pict_fp );
+   
+   // ---- pixelSize (bits: 1; 2; 4; 8; 16; 32 bits)
+   fputc( 0x00, pict_fp );
+   fputc( 0x20, pict_fp );
+   
+   // ---- componentCount (1 == index; 3 == direct RGB, 4 == ORGB )
+   fputc( 0x00, pict_fp );
+   fputc( 0x04, pict_fp );
+   
+   // ---- componentSize (bits: 1; 2; 4; 8;  5 for 16 bit RGB)
+   fputc( 0x00, pict_fp );
+   fputc( 0x08, pict_fp );
+   
+   // ---- planeBytes
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+
+   // ---- pixMapTable (Handle)
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- pixMapReserve
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- source rect
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( bottom >> 8, pict_fp );
+   fputc( bottom & 0xff, pict_fp );
+   fputc( right >> 8, pict_fp );
+   fputc( right & 0xff, pict_fp );
+   
+   // ---- dest rect
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( bottom >> 8, pict_fp );
+   fputc( bottom & 0xff, pict_fp );
+   fputc( right >> 8, pict_fp );
+   fputc( right & 0xff, pict_fp );
+   
+   // ---- mode
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+
+   // ==== PixData
+   unsigned char *uncompressed_buffer = malloc( right << 2 ); // ORGB
+   unsigned char *compressed_buffer = malloc( right << 3 ); //
+   
+   if( (uncompressed_buffer == NULL) || (compressed_buffer == NULL) ) {
+      printf( "Problem create buffer for compress image\n" );
+      exit(0);
+   }
+   
+
+   unsigned short row = 0;
+   while( row < bottom ) {
+      // ---- flip image/lật ảnh
+      unsigned int channelDataIndex = bottom*(right - 1 - row);
+      // ---- copy data in buffer, order O R G B
+      unsigned short indexO = 0;
+      unsigned short indexR = right;
+      unsigned short indexG = right << 1;
+      unsigned short indexB = right*3;
+      unsigned short index = 0;
+      while( index < right ) {
+         uncompressed_buffer[indexO] = image->channel_O[channelDataIndex];
+         uncompressed_buffer[indexR] = image->channel_R[channelDataIndex];
+         uncompressed_buffer[indexG] = image->channel_G[channelDataIndex];
+         uncompressed_buffer[indexB] = image->channel_B[channelDataIndex];
+         index++;
+         indexO++;
+         indexR++;
+         indexG++;
+         indexB++;
+         channelDataIndex++;
+      }
+      
+      // ---- compress buffer
+      unsigned short dataSize = compress_chunk_RLE( uncompressed_buffer, right << 2, compressed_buffer );
+/*      printf( " Data size : %d\n", dataSize );
+      index = 0;
+      while( index < dataSize ) {
+         printf( " %02x", compressed_buffer[index] );
+         index++;
+      }
+      printf( "\n" );
+      exit(0);
+      */
+      // ---- data size
+      if( twoByte ) {
+         fputc( dataSize >> 8, pict_fp );
+         fputc( dataSize & 0xff, pict_fp );
+      }
+      else
+         fputc( dataSize & 0xff, pict_fp );
+   
+      // ---- data
+      index = 0;
+      unsigned char *buffer = compressed_buffer;
+      while( index < dataSize ) {
+         fputc( *buffer, pict_fp );
+         buffer++;
+         index++;
+      }
+      
+      // ---- next row
+      row++;
+   }
+   
+   // ---- giữ số lượng byte chẵn
+   if( ftell( pict_fp ) & 1 )
+      fputc( 0x00, pict_fp );
+}
+
+#pragma mark ---- Decode PICT
 image_data decode_pict( const char *sfile ) {
 
    FILE *pict_fp;
@@ -359,13 +634,13 @@ image_data decode_pict( const char *sfile ) {
    duLieuAnhPICT.height = 0;
    
    printf( "docPICT: TenTep %s\n", sfile );
-    
+   
    /* open pict using filename */
    pict_fp = fopen(sfile, "rb");
-    
+   
    if (!pict_fp) {
-      printf("%-15.15s: Error open exr file %s\n","read_exr",sfile);
-      return duLieuAnhPICT;
+      printf("%-15.15s: Error open exr file: %s\n","read_exr",sfile);
+      exit(0);
    }
 
    // ---- skip 512 byte head
@@ -487,10 +762,12 @@ image_data decode_pict( const char *sfile ) {
          fseek( pict_fp, 8, SEEK_CUR );
          unsigned short mode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          
-         printf( " rowBytes %d  packType %d  pixelType %d  pixelSize %d  mode %d\n", rowBytes, packType, pixelType, pixelSize , mode);
+         printf( " rowBytes %d (%x) %d  packType %d  pixelType %d  pixelSize %d  mode %d\n", rowBytes, rowBytes, rowBytes & 0x7fff, packType, pixelType, pixelSize , mode);
+         // ---- remove PixMap flag
+         rowBytes &= 0x7fff;
  
          // ---- PixData (scan line)
-         read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop );
+         read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
          
          // ---- giữ số lượng byte chẵn
          if( ftell( pict_fp ) & 1 )
@@ -527,19 +804,153 @@ image_data decode_pict( const char *sfile ) {
    return duLieuAnhPICT;
 }
 
-// ===================================
-void tenAnh_RGBO( char *tenAnhGoc, char *tenAnhPNG ) {
+#pragma mark ----
+void encode_pict( const char *sfile, image_data *image ) {
+   
+   FILE *pict_fp = fopen( sfile, "wb" );
+
+   if( pict_fp == NULL ) {
+      printf( "Problem create file %s\n", sfile );
+      exit(0);
+   }
+   
+   // ---- skip 512 byte head
+   unsigned int index = 0;
+   while( index < 512 ) {
+      fputc( 0x00, pict_fp );
+      index++;
+   }
+   
+   // ---- image frame
+   fputc( 0x00, pict_fp );
+   fputc( 0x0a, pict_fp );
+   
+
+   unsigned short right = image->width;
+   unsigned short bottom = image->height;
+   // ---- top
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   // ---- left
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   // ---- bottom
+   fputc( bottom >> 8, pict_fp );
+   fputc( bottom & 0xff, pict_fp );
+   // ---- right
+   fputc( right >> 8, pict_fp );
+   fputc( right & 0xff, pict_fp );
+   
+   // ---- version PICT 2.0 - Phiên Bản 2.0
+   fputc( 0x00, pict_fp );
+   fputc( 0x11, pict_fp );
+   
+   fputc( 0x02, pict_fp );
+   fputc( 0xff, pict_fp );
+   
+   fputc( 0x0c, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- use this value is PixMap Handle is zero
+   fputc( 0xff, pict_fp );
+   fputc( 0xff, pict_fp );
+   fputc( 0xff, pict_fp );
+   fputc( 0xff, pict_fp );
+   
+   // ---- resolution x
+   fputc( 0x00, pict_fp );
+   fputc( 0x48, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- resolution y
+   fputc( 0x00, pict_fp );
+   fputc( 0x48, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- frame
+   fputc( right >> 8, pict_fp );
+   fputc( right & 0xff, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( bottom >> 8, pict_fp );
+   fputc( bottom & 0xff, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- reserve
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   fputc( 0x00, pict_fp );
+   
+   // ---- add op code Frame
+   opCodeFrame( pict_fp, 0, 0, bottom, right );
+   
+   // ---- add op code PixMap
+   opCodePixMap( pict_fp, image );
+   
+   // ---- end
+   fputc( 0x00, pict_fp );
+   fputc( 0xff, pict_fp );
+   
+   fclose( pict_fp );
+}
+
+
+#pragma mark ---- Phân Tích Đuôi Tập Tin
+unsigned char phanTichDuoiTapTin( char *tenTapTin ) {
+
+   // ---- đến cuối cùnh tên
+   while( *tenTapTin != 0x00 ) {
+      tenTapTin++;
+   }
+
+   // ---- trở lại 3 cái
+   tenTapTin -= 3;
+   
+   // ---- xem có đuôi nào
+   unsigned char kyTu0 = *tenTapTin;
+   tenTapTin++;
+   unsigned char kyTu1 = *tenTapTin;
+   tenTapTin++;
+   unsigned char kyTu2 = *tenTapTin;
+   
+   unsigned char loaiTapTin = 0;
+
+   if( (kyTu0 == 'p') || (kyTu0 == 'P')  ) {
+      if( (kyTu1 == 'n') || (kyTu1 == 'N')  ) {
+         if( (kyTu2 == 'g') || (kyTu2 == 'G')  ) {
+            loaiTapTin = kPNG;
+         }
+      }
+      else  if( (kyTu1 == 'c') || (kyTu1 == 'C')  ) {
+         if( (kyTu2 == 't') || (kyTu2 == 'T')  ) {
+            loaiTapTin = kPICT;
+         }
+      }
+   }
+   
+   
+   return loaiTapTin;
+}
+
+
+#pragma mark ==== Đuôi Tập Tin
+void tenAnhPNG( char *tenAnhGoc, char *tenAnhPNG ) {
    
    // ---- chép tên ảnh gốc
-   while( (*tenAnhGoc != 0x00) && (*tenAnhGoc != '.') ) {
+   while( *tenAnhGoc != 0x00 ) {
       *tenAnhPNG = *tenAnhGoc;
       tenAnhPNG++;
       tenAnhGoc++;
    }
    
-   // ---- kèm đuôi
-   *tenAnhPNG = '.';
-   tenAnhPNG++;
+   // ---- trở lại 3 cái
+   tenAnhPNG -= 3;
+   
+   // ---- kèm đuôi PNG
    *tenAnhPNG = 'p';
    tenAnhPNG++;
    *tenAnhPNG = 'n';
@@ -547,7 +958,28 @@ void tenAnh_RGBO( char *tenAnhGoc, char *tenAnhPNG ) {
    *tenAnhPNG = 'g';
    tenAnhPNG++;
    *tenAnhPNG = 0x0;
-   tenAnhPNG++;
+}
+
+void tenAnhPICT( char *tenAnhGoc, char *tenAnhPCT ) {
+   
+   // ---- chép tên ảnh gốc
+   while( *tenAnhGoc != 0x00 ) {
+      *tenAnhPCT = *tenAnhGoc;
+      tenAnhPCT++;
+      tenAnhGoc++;
+   }
+   
+   // ---- trở lại 3 cái
+   tenAnhPCT -= 3;
+   
+   // ---- kèm đuôi PNG
+   *tenAnhPCT = 'p';
+   tenAnhPCT++;
+   *tenAnhPCT = 'c';
+   tenAnhPCT++;
+   *tenAnhPCT = 't';
+   tenAnhPCT++;
+   *tenAnhPCT = 0x0;
 }
 
 
@@ -555,51 +987,99 @@ void tenAnh_RGBO( char *tenAnhGoc, char *tenAnhPNG ) {
 int main( int argc, char **argv ) {
 
    if( argc > 1 ) {
-      image_data anhPICT = decode_pict( argv[1] );
+      // ---- phân tích đuôi tập tin
+      unsigned char loaiTapTin = 0;
+      loaiTapTin = phanTichDuoiTapTin( argv[1] );
       
-      // ---- tên tập tin
-      char tenTep[255];
-      tenAnh_RGBO( argv[1], tenTep );
-      
-      // ---- pha trộn các kênh
-      unsigned int chiSoCuoi = anhPICT.width*anhPICT.height << 2;
-      unsigned char *demPhaTron = malloc( chiSoCuoi );
-      
-      if( demPhaTron != NULL ) {
+      if( loaiTapTin == kPICT ) {
+         printf( " PICT file\n" );
+         image_data anhPICT = decode_pict( argv[1] );
          
-         unsigned int chiSo = 0;
-         unsigned int chiSoKenh = 0;
-   
-         while( chiSo < chiSoCuoi ) {
- 
-            demPhaTron[chiSo] = anhPICT.channel_R[chiSoKenh];
-            demPhaTron[chiSo+1] = anhPICT.channel_G[chiSoKenh];
-            demPhaTron[chiSo+2] = anhPICT.channel_B[chiSoKenh];
-            demPhaTron[chiSo+3] = anhPICT.channel_O[chiSoKenh];
-            chiSo += 4;
-            chiSoKenh++;
+         // ---- chuẩn bị tên tập tin
+         char tenTep[255];
+         tenAnhPNG( argv[1], tenTep );
+         
+         // ---- pha trộn các kênh
+         unsigned int chiSoCuoi = anhPICT.width*anhPICT.height << 2;
+         unsigned char *demPhaTron = malloc( chiSoCuoi );
+         
+         if( demPhaTron != NULL ) {
+            
+            unsigned int chiSo = 0;
+            unsigned int chiSoKenh = 0;
+            
+            while( chiSo < chiSoCuoi ) {
+               
+               demPhaTron[chiSo] = anhPICT.channel_R[chiSoKenh];
+               demPhaTron[chiSo+1] = anhPICT.channel_G[chiSoKenh];
+               demPhaTron[chiSo+2] = anhPICT.channel_B[chiSoKenh];
+               demPhaTron[chiSo+3] = anhPICT.channel_O[chiSoKenh];
+               chiSo += 4;
+               chiSoKenh++;
+            }
+            
+            // ---- lưu tập tin PNG
+            luuAnhPNG( tenTep, demPhaTron, anhPICT.width, anhPICT.height, kPNG_BGRO );
          }
          
-         // ---- lưu tập tin PNG
-         luuAnhPNG( tenTep, demPhaTron, anhPICT.width, anhPICT.height, kPNG_BGRO );
+         free( anhPICT.channel_R );
+         free( anhPICT.channel_G );
+         free( anhPICT.channel_B );
+         free( anhPICT.channel_O );
       }
-      
-      free( anhPICT.channel_R );
-      free( anhPICT.channel_G );
-      free( anhPICT.channel_B );
-      free( anhPICT.channel_O );
+      else if( loaiTapTin == kPNG ) {
+         printf( " PNG file\n" );
+
+         unsigned int beRong = 0;
+         unsigned int beCao = 0;
+         unsigned char canLatMau = 0;
+         unsigned char loaiPNG;
+         unsigned char *duLieuAnhPNG = docPNG( argv[1], &beRong, &beCao, &canLatMau, &loaiPNG );
+
+         image_data anhPNG;
+         anhPNG.width = beRong;
+         anhPNG.height = beCao;
+         anhPNG.componentCount = 4;
+         printf( "Size %d x %d\n", beRong, beCao );
+         // ----
+         anhPNG.channel_O = malloc( beRong*beCao );
+         anhPNG.channel_R = malloc( beRong*beCao );
+         anhPNG.channel_G = malloc( beRong*beCao );
+         anhPNG.channel_B = malloc( beRong*beCao );
+   
+         if( (anhPNG.channel_O == NULL) || (anhPNG.channel_R == NULL )
+            || (anhPNG.channel_G == NULL) || (anhPNG.channel_B == NULL) ) {
+            printf( "Problem create channel for image\n" );
+            exit(0);
+         }
+         
+         unsigned int chiSoDuLieuAnh = 0;
+         unsigned int chiSoDuLieuAnhCuoi = beRong*beCao << 2;
+         unsigned int chiSoKenh = 0;
+         while( chiSoDuLieuAnh < chiSoDuLieuAnhCuoi ) {
+            anhPNG.channel_O[chiSoKenh] = duLieuAnhPNG[chiSoDuLieuAnh+3];
+            anhPNG.channel_R[chiSoKenh] = duLieuAnhPNG[chiSoDuLieuAnh];
+            anhPNG.channel_G[chiSoKenh] = duLieuAnhPNG[chiSoDuLieuAnh+1];
+            anhPNG.channel_B[chiSoKenh] = duLieuAnhPNG[chiSoDuLieuAnh+2];
+            
+            chiSoKenh++;
+            chiSoDuLieuAnh += 4;
+         }
+         
+         // ---- chuẩn bị tên tập tin
+         char tenTep[255];
+         tenAnhPICT( argv[1], tenTep );
+         printf( " %s\n", tenTep );
+         
+         // ---- encode PICT
+         encode_pict( tenTep, &anhPNG );
+      }
+
    }
    
-   return 1;
+   return 0;
 }
 
 
-// ---- Từ thư viện 
-unsigned int nenRLE(unsigned char *dem, int beDaiDem, unsigned char *demNen, int beDaiDemNen ) {
-   
-   unsigned int beDaiNen = 0;
-   
-   return beDaiNen;
-}
 
 
