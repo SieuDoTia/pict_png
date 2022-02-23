@@ -8,6 +8,7 @@ typedef struct {
    unsigned short width;    /* width      */
    unsigned short height;   /* height     */
    unsigned short componentCount;  /* component count */
+   unsigned short pixelSize;      /* pixel size (bit) */
 
    unsigned char *channel_B;        /* channel b  */
    unsigned char *channel_G;        /* channel g  */

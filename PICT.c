@@ -19,7 +19,7 @@ Image data after head
 
    (26 btyes)
    2 bytes  | ushort | HEAD_OP     | Head opocde, for version 2.0 should equal 0x0c00
-   2 bytes  | ushort | CODE        | for version 2.0 should equal 0xffef or 0xffee but some time 0xffff
+   2 bytes  | ushort | CODE        | for version 2.0 should equal 0xffef or 0xffee but some time 0xffff (if PixMap Handle == 0, use 0xffff)
    2 bytes  | ushort | ????        | Equal 0xfffff or 0x0000
    4 bytes  | uint   | RESOLUT_X   | Resolution horizontal (pixel/inch, divide 2.54 for cm)
    4 bytes  | uint   | RESOLUT_Y   | Resolution vertical (pixel/inch, divide 2.54 for cm)
@@ -70,10 +70,10 @@ Image data after head
 #define OP_CODE__PAINT_RRECT 0x0041   // +8
 
 #define OP_CODE__BITS_RECT      0x0090   // +???
-#define OP_CODE__PACK_BITS_RECT 0x0098   // +???
+#define OP_CODE__PACK_BITS_RECT 0x0098   // cho RGB
 
-#define OP_CODE__DIRECT_BITS_RECT 0x009a   // +???   cho RGB
-#define OP_CODE__DIRECT_BITS_RGN  0x009b   // +???   cho RGB
+#define OP_CODE__DIRECT_BITS_RECT 0x009a   // cho RGB
+#define OP_CODE__DIRECT_BITS_RGN  0x009b   // cho RGB
 
 #define OP_CODE__END     0x00ff   // +0
 
@@ -255,6 +255,63 @@ void uncompress_rle( char *compressed_buffer, int compressed_buffer_length, unsi
 
 }
 
+void uncompress_rle_16bit( char *compressed_buffer, int compressed_buffer_length, unsigned char *uncompressed_buffer, int uncompressed_buffer_length) {
+   
+   // ---- while not finish all in buffer
+   while( compressed_buffer_length > 0 ) {
+      char byteCount = *compressed_buffer;
+      // ---- move to next byte
+      compressed_buffer++;
+      
+      // ---- if byte value ≥ 0
+      if( byteCount > -1 ) {
+         // ---- count for not same byte value
+         int count = byteCount + 1;
+         //         printf( "  chép count %d ", count );
+         // ---- reduce amount count of 2*bytes remaining for in buffer
+         compressed_buffer_length -= count << 1;
+         compressed_buffer_length--;
+         // ---- if count larger than out buffer length still available
+         if (0 > (uncompressed_buffer_length -= count << 1)) {
+            printf( "  uncompress_rle: Error buffer not length not enough. Have %d but need %d\n", uncompressed_buffer_length, count );
+            exit(0);
+            return;
+         }
+         // ---- copy not same 2 byte and move to next 2 byte
+         while( count-- > 0 ) {
+            *uncompressed_buffer++ = *(compressed_buffer++);
+            *uncompressed_buffer++ = *(compressed_buffer++);
+         }
+         
+      }
+      else if( byteCount < 0 ) {
+         // ---- count number bytes same
+         int count = -byteCount+1;
+         unsigned char valueForCopy0 = *compressed_buffer;
+         compressed_buffer++;
+         unsigned char valueForCopy1 = *compressed_buffer;
+         // ---- move to next byte
+         compressed_buffer++;
+         //         printf( "  repeat count %d (%d) ", count, valueForCopy );
+         // ---- reduce amount count of remaining bytes for in buffer
+         compressed_buffer_length -= 3;
+         // ---- if count larger than out buffer length still available
+         if (0 > (uncompressed_buffer_length -= count << 1)) {
+            printf( "  uncompress_rle: Error buffer not length not enough. Have %d but need %d\n", uncompressed_buffer_length, count );
+            exit(0);
+            return;
+         }
+         // ---- copy same 2 byte
+         while( count-- > 0 ) {
+            *uncompressed_buffer++ = valueForCopy0;
+            *uncompressed_buffer++ = valueForCopy1;
+         }
+      }
+      
+   }
+   
+}
+
 #pragma mark ---- Copy Data
 void copyBufferUchar( unsigned char *destination, unsigned char *ucharSource, unsigned int length ) {
 
@@ -269,7 +326,7 @@ void copyBufferUchar( unsigned char *destination, unsigned char *ucharSource, un
 
 
 #pragma mark ---- RLE Compression
-void read_data_compression_rle__scanline( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data ) {
+void read_data_compression_rle__scanline_32bit( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data ) {
 
    unsigned int num_columns = image_data->width;
    unsigned int num_rows = image_data->height;
@@ -289,7 +346,6 @@ void read_data_compression_rle__scanline( FILE *pict_fp, chunk_data *chunk_data,
       exit(0);
    }
 
-
    unsigned short chunk_number = 0;
    while( chunk_number < chunk_data->num_chunks ) {
       // ---- begin chunk
@@ -297,7 +353,7 @@ void read_data_compression_rle__scanline( FILE *pict_fp, chunk_data *chunk_data,
 
       // ---- read data length
       unsigned int data_length = chunk_data->chunk_size[chunk_number];
-//       printf( " chunk %d  data_length %d  channelDataIndex %d \n", chunk_number, data_length, channelDataIndex );
+
       // ---- read compressed data
       fread( compressed_buffer, 1, data_length, pict_fp );
 
@@ -347,13 +403,88 @@ void read_data_compression_rle__scanline( FILE *pict_fp, chunk_data *chunk_data,
 
       chunk_number++;
    }
-   printf( "componentCount %d  image_data->channel %d %d %d %d\n", componentCount, image_data->channel_R[0], image_data->channel_G[0],
-          image_data->channel_B[0], image_data->channel_O[0] );
+
    // ---- free memory
    free( compressed_buffer );
    free( uncompressed_buffer );
 }
 
+
+// ==== 16 bit pixel format
+// 1111 11
+// 5432 1098 7654 3210
+// -------------------
+// xxxx xxxx xxxx xxxx
+// -rrr rrgg gggb bbbb
+void read_data_compression_rle__scanline_16bit( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data ) {
+   
+   unsigned int num_columns = image_data->width;
+   unsigned int num_rows = image_data->height;
+   
+   unsigned short componentCount = image_data->componentCount;
+   unsigned int uncompressed_data_length = num_columns << 1;  //16 bit
+   
+   char *compressed_buffer = malloc( uncompressed_data_length << 1 );
+   unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
+   if( compressed_buffer == NULL ) {
+      printf( "Problem create compressed buffer\n" );
+      exit(0);
+   }
+   
+   if( uncompressed_buffer == NULL ) {
+      printf( "Problem create uncompressed buffer\n" );
+      exit(0);
+   }
+   
+   unsigned short chunk_number = 0;
+   while( chunk_number < chunk_data->num_chunks ) {
+      // ---- begin chunk
+      fseek( pict_fp, chunk_data->chunk_table_position[chunk_number], SEEK_SET );
+      
+      // ---- read data length
+      unsigned int data_length = chunk_data->chunk_size[chunk_number];
+
+      // ---- read compressed data
+      fread( compressed_buffer, 1, data_length, pict_fp );
+      
+      // ---- uncompress rle 16 bit data
+      uncompress_rle_16bit( compressed_buffer, data_length, uncompressed_buffer, uncompressed_data_length );
+      
+      // ---- address for component data from umcopressed buffer
+      unsigned int bufferIndex = 0;
+
+      // ---- address for copy in channel
+      unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
+      
+      unsigned int uncompressed_buffer_index = 0;
+      while( uncompressed_buffer_index < num_columns ) {
+         unsigned short pixel16bit = uncompressed_buffer[bufferIndex] << 8 | uncompressed_buffer[bufferIndex+1];
+         unsigned char red = (pixel16bit >> 10) & 0x1f;
+         unsigned char green = (pixel16bit >> 5) & 0x1f;
+         unsigned char blue = pixel16bit & 0x1f;
+   
+         // ---- use convert method from Imaging With QuickDraw 1994 page 4-17
+         image_data->channel_R[channelDataIndex] = (red << 3) | (red >> 2);
+         image_data->channel_G[channelDataIndex] = (green << 3) | (green >> 2);
+         image_data->channel_B[channelDataIndex] = (blue << 3) | (blue >> 2);
+         image_data->channel_O[channelDataIndex] = 0xff;
+
+         bufferIndex += 2;
+
+         uncompressed_buffer_index++;
+         channelDataIndex++;
+      }
+      
+      chunk_number++;
+   }
+
+   // ---- free memory
+   free( compressed_buffer );
+   free( uncompressed_buffer );
+}
+
+
+#pragma mark ---- Compress RLE
 // ---- Hàm từ thư viện OpenEXR của ILM
 #define MIN_RUN_LENGTH   3
 #define MAX_RUN_LENGTH 127
@@ -705,7 +836,29 @@ image_data decode_pict( const char *sfile ) {
          // ---- skip
          fseek( pict_fp, 8, SEEK_CUR );
       }
+      else if( opCode == OP_CODE__PACK_BITS_RECT ) {
+         // ---- pixMap
+         
+         // ---- color table
+            // color table seed 4 bytes
+            // color table flag 2 bytes
+            // color table size 2 bytes
+            // color table array
+               // value 2 bytes
+               // red 2 bytes
+               // green 2 bytes
+               // blue 2 bytes
+
+         // ---- source rect
+         
+         // ---- dest rect
+         
+         // ---- PixData
+         exit(0);  // chưa làm
+         
+      }
       else if( opCode == OP_CODE__DIRECT_BITS_RECT ) {
+         // ==== START PixMap
          // ---- pixMap (50 byte)  page 4-46 Imaging With Quickdraw year 1994
          //   bassAddr 4 byte (ignore)
          //   rowBytes 2 byte
@@ -735,8 +888,9 @@ image_data decode_pict( const char *sfile ) {
          
          //   pixelSize   2 bytes (bits: 1; 2; 4; 8; 16; 32 bits)
          unsigned short pixelSize = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         if( pixelSize != 32 ) {
-            printf( "PixelSize = %d, only support 32 bit.\n", pixelSize );
+         duLieuAnhPICT.pixelSize = pixelSize;
+         if( (pixelSize < 16) ) {
+            printf( "PixelSize = %d, only support 32 or 16 bit.\n", pixelSize );
             exit(0);
          }
             
@@ -748,6 +902,7 @@ image_data decode_pict( const char *sfile ) {
          //   planeBytes   4 bytes
          //   pixMapTable  4 bytes (Handle)
          //   pixMapReserve 4 bytes (ignore)
+         // ==== END PixMap
    
          // ---- source rect (8 byte)
          fseek( pict_fp, 14, SEEK_CUR );
@@ -761,13 +916,15 @@ image_data decode_pict( const char *sfile ) {
          // ---- mode (2 byte)
          fseek( pict_fp, 8, SEEK_CUR );
          unsigned short mode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         
-         printf( " rowBytes %d (%x) %d  packType %d  pixelType %d  pixelSize %d  mode %d\n", rowBytes, rowBytes, rowBytes & 0x7fff, packType, pixelType, pixelSize , mode);
+
          // ---- remove PixMap flag
          rowBytes &= 0x7fff;
+         printf( " rowBytes %d (%x) %d  packType %d  pixelType %d  pixelSize %d  mode %d\n", rowBytes, rowBytes, rowBytes & 0x7fff, packType, pixelType, pixelSize , mode);
  
          // ---- PixData (scan line)
          read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
+         
+//         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
          
          // ---- giữ số lượng byte chẵn
          if( ftell( pict_fp ) & 1 )
@@ -794,7 +951,10 @@ image_data decode_pict( const char *sfile ) {
       exit(0);
    }
    
-   read_data_compression_rle__scanline( pict_fp, &chunk_list, &duLieuAnhPICT );
+   if( duLieuAnhPICT.pixelSize > 16 )
+      read_data_compression_rle__scanline_32bit( pict_fp, &chunk_list, &duLieuAnhPICT );
+   else
+      read_data_compression_rle__scanline_16bit( pict_fp, &chunk_list, &duLieuAnhPICT );
    
    free( chunk_list.chunk_table_position );
    free( chunk_list.chunk_size );
