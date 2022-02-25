@@ -111,6 +111,21 @@ typedef struct {
    unsigned int *chunk_table_position; /* list for chunk's position in table */
 } chunk_data;
 
+/* ColorSpec */
+typedef struct {
+   unsigned short value;
+   unsigned short red;
+   unsigned short green;
+   unsigned short blue;
+} ColorSpec;
+
+/* ColorTable */
+typedef struct {
+   unsigned int seed;
+   unsigned short flag;
+   unsigned short size;
+   ColorSpec *arrayColorSpec;
+} ColorTable;
 
 
 void luuAnhKongNen( char *tenTep, image_data *anh, unsigned char kieuDuLieu, unsigned short thoiGianKetXuat );
@@ -484,6 +499,76 @@ void read_data_compression_rle__scanline_16bit( FILE *pict_fp, chunk_data *chunk
 }
 
 
+void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data, ColorTable *color_table ) {
+   
+   unsigned int num_columns = image_data->width;
+   unsigned int num_rows = image_data->height;
+   
+   unsigned short componentCount = image_data->componentCount;
+   unsigned int uncompressed_data_length = num_columns << 1;  //16 bit
+   
+   char *compressed_buffer = malloc( uncompressed_data_length << 1 );
+   unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
+   if( compressed_buffer == NULL ) {
+      printf( "Problem create compressed buffer\n" );
+      exit(0);
+   }
+   
+   if( uncompressed_buffer == NULL ) {
+      printf( "Problem create uncompressed buffer\n" );
+      exit(0);
+   }
+   
+   unsigned short chunk_number = 0;
+   while( chunk_number < chunk_data->num_chunks ) {
+      // ---- begin chunk
+      fseek( pict_fp, chunk_data->chunk_table_position[chunk_number], SEEK_SET );
+      
+      // ---- read data length
+      unsigned int data_length = chunk_data->chunk_size[chunk_number];
+      
+      // ---- read compressed data
+      fread( compressed_buffer, 1, data_length, pict_fp );
+      
+      // ---- uncompress rle data
+      uncompress_rle( compressed_buffer, data_length, uncompressed_buffer, uncompressed_data_length );
+      
+      // ---- address for component data from umcopressed buffer
+      unsigned int bufferIndex = 0;
+      
+      // ---- address for copy in channel
+      unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
+      
+      unsigned int uncompressed_buffer_index = 0;
+      while( uncompressed_buffer_index < num_columns ) {
+         // ---- get value for pixel's color data
+         unsigned short tableIndex = uncompressed_buffer[bufferIndex];
+   
+         unsigned char red = color_table->arrayColorSpec[tableIndex].red;
+         unsigned char green = color_table->arrayColorSpec[tableIndex].green;
+         unsigned char blue = color_table->arrayColorSpec[tableIndex].blue;
+         
+         // ---- use convert method from Imaging With QuickDraw 1994 page 4-17
+         image_data->channel_R[channelDataIndex] = red;
+         image_data->channel_G[channelDataIndex] = green;
+         image_data->channel_B[channelDataIndex] = blue;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         
+         bufferIndex++;
+         
+         uncompressed_buffer_index++;
+         channelDataIndex++;
+      }
+      
+      chunk_number++;
+   }
+   
+   // ---- free memory
+   free( compressed_buffer );
+   free( uncompressed_buffer );
+}
+
+
 #pragma mark ---- Compress RLE
 // ---- Hàm từ thư viện OpenEXR của ILM
 #define MIN_RUN_LENGTH   3
@@ -538,8 +623,42 @@ unsigned int compress_chunk_RLE(unsigned char *in, unsigned int inLength, unsign
    return outWrite - out;
 }
 
+#pragma mark ---- Color Table
+void colorTable_read( FILE *pict_fp, ColorTable *color_table ) {
+   
+   color_table->seed = fgetc( pict_fp ) << 24 | fgetc( pict_fp ) << 16 | fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+   color_table->flag = fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+   color_table->size = fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+   
+   printf( " color_table_size %d\n", color_table->size );
+   if( color_table->size > 255 ) {
+      printf( " Color table size %d more than 256\n", color_table->size );
+      exit(0);
+   }
+   
+   color_table->arrayColorSpec = malloc( color_table->size * sizeof( ColorSpec ) );
+   if( color_table->arrayColorSpec == NULL ) {
+      printf( "Problem create color table array\n" );
+      exit(0);
+   }
+   
+   // ---- read data from ColorSpec array
+   unsigned index = 0;
+   unsigned short size = color_table->size + 1;
+   while( index < size ) {
+      color_table->arrayColorSpec[index].value = fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+      color_table->arrayColorSpec[index].red = fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+      color_table->arrayColorSpec[index].green = fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+      color_table->arrayColorSpec[index].blue = fgetc( pict_fp ) << 8 | fgetc( pict_fp );
+//      printf( "%d - %d %04x %04x %04x\n", index, color_table->arrayColorSpec[index].value, color_table->arrayColorSpec[index].red, color_table->arrayColorSpec[index].green,
+//             color_table->arrayColorSpec[index].blue );
+      index++;
+   }
+}
+
+
 #pragma mark ---- OpCode Frame
-void opCodeFrame( FILE *pict_fp, unsigned short top, unsigned short left, unsigned short bottom, unsigned short right ) {
+void opCodeFrame_write( FILE *pict_fp, unsigned short top, unsigned short left, unsigned short bottom, unsigned short right ) {
 
    // ---- op code number 0x0001
    fputc( 0x00, pict_fp );
@@ -564,7 +683,7 @@ void opCodeFrame( FILE *pict_fp, unsigned short top, unsigned short left, unsign
 }
 
 #pragma mark ---- OpCode PixMap
-void opCodePixMap( FILE *pict_fp, image_data *image ) {
+void opCodePixMap_write( FILE *pict_fp, image_data *image ) {
 
    // ---- image frame
    unsigned short right = image->width;
@@ -694,7 +813,6 @@ void opCodePixMap( FILE *pict_fp, image_data *image ) {
       printf( "Problem create buffer for compress image\n" );
       exit(0);
    }
-   
 
    unsigned short row = 0;
    while( row < bottom ) {
@@ -756,6 +874,62 @@ void opCodePixMap( FILE *pict_fp, image_data *image ) {
       fputc( 0x00, pict_fp );
 }
 
+unsigned short opCodePixMap_read( FILE *pict_fp, image_data *duLieuAnhPICT ) {
+
+   // ---- pixMap (50 byte)  page 4-46 Imaging With Quickdraw year 1994
+   //   bassAddr 4 byte (ignore)
+   //   rowBytes 2 byte
+   fseek( pict_fp, 4, SEEK_CUR );
+   unsigned short rowBytes = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   
+   //   bounds Rect 8 bytes
+   unsigned short top = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   unsigned short left = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   unsigned short bottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   unsigned short right = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   //         printf( "  rowBytes %d  left %d  top %d  right %d  bottom %d\n", rowBytes, left, top, right, bottom );
+   
+   //   pixMapVersion 2 bytes
+   
+   //   packType  2 bytes
+   fseek( pict_fp, 2, SEEK_CUR );
+   unsigned short packType = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   
+   //   packSize     4 bytes
+   //   horz resolut 4 bytes (fix point 16.16)
+   //   vert resolut 4 bytes (fix point 16.16)
+   
+   //   pixelType   2 bytes (0 == index; 16 = direct)
+   fseek( pict_fp, 12, SEEK_CUR );
+   unsigned short pixelType = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   
+   //   pixelSize   2 bytes (bits: 1; 2; 4; 8; 16; 32 bits)
+   unsigned short pixelSize = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   duLieuAnhPICT->pixelSize = pixelSize;
+   if( (pixelSize < 8) ) {
+      printf( "PixelSize = %d, only support 32; 16; 8 bit.\n", pixelSize );
+      exit(0);
+   }
+   
+   //   componentCount    2 bytes (1 == index; 3 == direct RGB )
+   unsigned short componentCount = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   duLieuAnhPICT->componentCount = componentCount;
+   
+   unsigned short componentSize = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   //   componentSize    2 bytes (bits: 1; 2; 4; 8;  5 for 16 bit RGB)
+   // ---- skip last 12 bytes
+   //   planeBytes   4 bytes
+   //   pixMapTable  4 bytes (Handle)
+   //   pixMapReserve 4 bytes (ignore)
+   fseek( pict_fp, 12, SEEK_CUR );
+
+   // ---- remove bit map flag
+   rowBytes &= 0x3fff;
+   printf( " rowBytes %d  packType %d  pixelType %d  pixelSize %d\n  componentCount %d componentSize %d\n", rowBytes, packType, pixelType, pixelSize, componentCount, componentSize );
+   
+   return rowBytes;
+}
+
 #pragma mark ---- Decode PICT
 image_data decode_pict( const char *sfile ) {
 
@@ -763,6 +937,9 @@ image_data decode_pict( const char *sfile ) {
    image_data duLieuAnhPICT;
    duLieuAnhPICT.width = 0;
    duLieuAnhPICT.height = 0;
+   
+   ColorTable color_table;  // only for 8 bit image
+   color_table.arrayColorSpec = NULL;
    
    printf( "docPICT: TenTep %s\n", sfile );
    
@@ -837,95 +1014,64 @@ image_data decode_pict( const char *sfile ) {
          fseek( pict_fp, 8, SEEK_CUR );
       }
       else if( opCode == OP_CODE__PACK_BITS_RECT ) {
-         // ---- pixMap
-         
+         // ---- pixMap (50 bytes)
+         unsigned short rowBytes = opCodePixMap_read( pict_fp, &duLieuAnhPICT );
+         printf( "rowBytes %d\n", rowBytes );
+         if( rowBytes == 0 ) {
+            rowBytes = (duLieuAnhPICT.width * duLieuAnhPICT.pixelSize) >> 3;
+         printf( "   rowBytes %d\n", rowBytes );
+         }
+
          // ---- color table
-            // color table seed 4 bytes
-            // color table flag 2 bytes
-            // color table size 2 bytes
-            // color table array
-               // value 2 bytes
-               // red 2 bytes
-               // green 2 bytes
-               // blue 2 bytes
+         fseek( pict_fp, -4, SEEK_CUR );  // phải trở lại 4 byte, chưa hiểu rỏ tại sao
+         colorTable_read( pict_fp, &color_table );
 
          // ---- source rect
-         
-         // ---- dest rect
-         
-         // ---- PixData
-         exit(0);  // chưa làm
-         
-      }
-      else if( opCode == OP_CODE__DIRECT_BITS_RECT ) {
-         // ==== START PixMap
-         // ---- pixMap (50 byte)  page 4-46 Imaging With Quickdraw year 1994
-         //   bassAddr 4 byte (ignore)
-         //   rowBytes 2 byte
-         fseek( pict_fp, 4, SEEK_CUR );
-         unsigned short rowBytes = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-
-         //   bounds Rect 8 bytes
-         unsigned short top = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         unsigned short left = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         unsigned short bottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         unsigned short right = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-//         printf( "  rowBytes %d  left %d  top %d  right %d  bottom %d\n", rowBytes, left, top, right, bottom );
-
-         //   pixMapVersion 2 bytes
-
-         //   packType  2 bytes
-         fseek( pict_fp, 2, SEEK_CUR );
-         unsigned short packType = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-      
-         //   packSize     4 bytes
-         //   horz resolut 4 bytes (fix point 16.16)
-         //   vert resolut 4 bytes (fix point 16.16)
-
-         //   pixelType   2 bytes (0 == index; 16 = direct)
-         fseek( pict_fp, 12, SEEK_CUR );
-         unsigned short pixelType = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         
-         //   pixelSize   2 bytes (bits: 1; 2; 4; 8; 16; 32 bits)
-         unsigned short pixelSize = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         duLieuAnhPICT.pixelSize = pixelSize;
-         if( (pixelSize < 16) ) {
-            printf( "PixelSize = %d, only support 32 or 16 bit.\n", pixelSize );
-            exit(0);
-         }
-            
-         //   componentCount    2 bytes (1 == index; 3 == direct RGB )
-         unsigned short componentCount = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-         duLieuAnhPICT.componentCount = componentCount;
-
-         //   componentSize    2 bytes (bits: 1; 2; 4; 8;  5 for 16 bit RGB)
-         //   planeBytes   4 bytes
-         //   pixMapTable  4 bytes (Handle)
-         //   pixMapReserve 4 bytes (ignore)
-         // ==== END PixMap
-   
-         // ---- source rect (8 byte)
-         fseek( pict_fp, 14, SEEK_CUR );
          unsigned short rectSourceTop = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceLeft = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceBottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceRight = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-//         printf( "rectSource %d %d %d %d\n", rectSourceTop, rectSourceLeft, rectSourceBottom, rectSourceRight );
+         printf( "rectSource %d %d %d %d\n", rectSourceTop, rectSourceLeft, rectSourceBottom, rectSourceRight );
+         
+         // ---- dest rect
+         
+         // ---- mode (2 byte)
+         fseek( pict_fp, 8, SEEK_CUR );
+         unsigned short mode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         
+         // ---- PixData (scan line)
+         read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
+         
+         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
+         
+         // ---- giữ số lượng byte chẵn
+         if( ftell( pict_fp ) & 1 )
+            fgetc(pict_fp);
+         
+      }
+      else if( opCode == OP_CODE__DIRECT_BITS_RECT ) {
+
+         // ---- pixMap (50 bytes)
+         unsigned short rowBytes = opCodePixMap_read( pict_fp, &duLieuAnhPICT );
+  
+         // ---- source rect (8 byte)
+         unsigned short rectSourceTop = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short rectSourceLeft = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short rectSourceBottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short rectSourceRight = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+//        printf( "rectSource %d %d %d %d ftell %d\n", rectSourceTop, rectSourceLeft, rectSourceBottom, rectSourceRight, ftell( pict_fp ) );
+
          // ---- dest rect (8 byte)
          
          // ---- mode (2 byte)
          fseek( pict_fp, 8, SEEK_CUR );
          unsigned short mode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-
-         // ---- remove PixMap flag
-         rowBytes &= 0x7fff;
-         printf( " rowBytes %d (%x) %d  packType %d  pixelType %d  pixelSize %d  mode %d\n", rowBytes, rowBytes, rowBytes & 0x7fff, packType, pixelType, pixelSize , mode);
  
          // ---- PixData (scan line)
          read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
          
 //         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
-         
+
          // ---- giữ số lượng byte chẵn
          if( ftell( pict_fp ) & 1 )
             fgetc(pict_fp);
@@ -953,19 +1099,26 @@ image_data decode_pict( const char *sfile ) {
    
    if( duLieuAnhPICT.pixelSize > 16 )
       read_data_compression_rle__scanline_32bit( pict_fp, &chunk_list, &duLieuAnhPICT );
-   else
+   else if( duLieuAnhPICT.pixelSize == 16 )
       read_data_compression_rle__scanline_16bit( pict_fp, &chunk_list, &duLieuAnhPICT );
+   else if( duLieuAnhPICT.pixelSize == 8 )
+      read_data_compression_rle__scanline_8bit( pict_fp, &chunk_list, &duLieuAnhPICT, &color_table );
    
+   // ---- close file
+      fclose( pict_fp );
+
+   // ---- free memory
    free( chunk_list.chunk_table_position );
    free( chunk_list.chunk_size );
-
-   fclose( pict_fp );
+   
+   if( color_table.arrayColorSpec != NULL )
+      free( color_table.arrayColorSpec );
 
    return duLieuAnhPICT;
 }
 
-#pragma mark ----
-void encode_pict( const char *sfile, image_data *image ) {
+#pragma mark ---- Encode PICT 32 bit
+void encode_pict_32bit( const char *sfile, image_data *image ) {
    
    FILE *pict_fp = fopen( sfile, "wb" );
 
@@ -1046,10 +1199,10 @@ void encode_pict( const char *sfile, image_data *image ) {
    fputc( 0x00, pict_fp );
    
    // ---- add op code Frame
-   opCodeFrame( pict_fp, 0, 0, bottom, right );
+   opCodeFrame_write( pict_fp, 0, 0, bottom, right );
    
    // ---- add op code PixMap
-   opCodePixMap( pict_fp, image );
+   opCodePixMap_write( pict_fp, image );
    
    // ---- end
    fputc( 0x00, pict_fp );
@@ -1231,8 +1384,8 @@ int main( int argc, char **argv ) {
          tenAnhPICT( argv[1], tenTep );
          printf( " %s\n", tenTep );
          
-         // ---- encode PICT
-         encode_pict( tenTep, &anhPNG );
+         // ---- encode PICT 32 bit
+         encode_pict_32bit( tenTep, &anhPNG );
       }
 
    }
