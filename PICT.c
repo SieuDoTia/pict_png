@@ -75,6 +75,8 @@ Image data after head
 #define OP_CODE__DIRECT_BITS_RECT 0x009a   // cho RGB
 #define OP_CODE__DIRECT_BITS_RGN  0x009b   // cho RGB
 
+#define OP_CODE__LONG_COMMENT  0x00a1   // +4+dữ liệu
+
 #define OP_CODE__END     0x00ff   // +0
 
 
@@ -548,7 +550,7 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
          unsigned short green = color_table->arrayColorSpec[tableIndex].green;
          unsigned short blue = color_table->arrayColorSpec[tableIndex].blue;
          
-         // ---- use convert method from Imaging With QuickDraw 1994 page 4-17
+         // ---- convert for 8 bit channel
          image_data->channel_R[channelDataIndex] = red >> 8;
          image_data->channel_G[channelDataIndex] = green >> 8;
          image_data->channel_B[channelDataIndex] = blue >> 8;
@@ -558,6 +560,91 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
          
          uncompressed_buffer_index++;
          channelDataIndex++;
+      }
+      
+      chunk_number++;
+   }
+   
+   // ---- free memory
+   free( compressed_buffer );
+   free( uncompressed_buffer );
+}
+
+void read_data_compression_rle__scanline_4bit( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data, ColorTable *color_table ) {
+   
+   unsigned int num_columns = image_data->width;
+   unsigned int num_rows = image_data->height;
+   
+   unsigned short componentCount = image_data->componentCount;
+   unsigned int uncompressed_data_length = num_columns << 1;  //16 bit
+   
+   char *compressed_buffer = malloc( uncompressed_data_length << 1 );
+   unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
+   if( compressed_buffer == NULL ) {
+      printf( "Problem create compressed buffer\n" );
+      exit(0);
+   }
+   
+   if( uncompressed_buffer == NULL ) {
+      printf( "Problem create uncompressed buffer\n" );
+      exit(0);
+   }
+   
+   unsigned short chunk_number = 0;
+   while( chunk_number < chunk_data->num_chunks ) {
+      // ---- begin chunk
+      fseek( pict_fp, chunk_data->chunk_table_position[chunk_number], SEEK_SET );
+      
+      // ---- read data length
+      unsigned int data_length = chunk_data->chunk_size[chunk_number];
+      
+      // ---- read compressed data
+      fread( compressed_buffer, 1, data_length, pict_fp );
+      
+      // ---- uncompress rle data
+      uncompress_rle( compressed_buffer, data_length, uncompressed_buffer, uncompressed_data_length );
+      
+      // ---- address for component data from umcopressed buffer
+      unsigned int bufferIndex = 0;
+      
+      // ---- address for copy in channel
+      unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
+      
+      unsigned int uncompressed_buffer_index = 0;
+      while( uncompressed_buffer_index < num_columns ) {
+         // ---- get value for pixel's color data
+         unsigned char tableIndex = uncompressed_buffer[bufferIndex];
+         // ---- two pixel index in each byte (4 bit)
+         unsigned char indexPixel0 = tableIndex >> 4;
+         unsigned char indexPixel1 = tableIndex & 0x0f;
+         
+         // ==== pixel 0
+         unsigned short red = color_table->arrayColorSpec[indexPixel0].red;
+         unsigned short green = color_table->arrayColorSpec[indexPixel0].green;
+         unsigned short blue = color_table->arrayColorSpec[indexPixel0].blue;
+         
+         // ---- convert for 8 bit channel
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+
+         // ==== pixel 1
+         red = color_table->arrayColorSpec[indexPixel1].red;
+         green = color_table->arrayColorSpec[indexPixel1].green;
+         blue = color_table->arrayColorSpec[indexPixel1].blue;
+
+         // ---- convert for 8 bit channel
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+         bufferIndex++;
+         
+         uncompressed_buffer_index += 2;
+
       }
       
       chunk_number++;
@@ -906,8 +993,8 @@ unsigned short opCodePixMap_read( FILE *pict_fp, image_data *duLieuAnhPICT ) {
    //   pixelSize   2 bytes (bits: 1; 2; 4; 8; 16; 32 bits)
    unsigned short pixelSize = fgetc(pict_fp) << 8 | fgetc(pict_fp);
    duLieuAnhPICT->pixelSize = pixelSize;
-   if( (pixelSize < 8) ) {
-      printf( "PixelSize = %d, only support 32; 16; 8 bit.\n", pixelSize );
+   if( (pixelSize < 4) ) {
+      printf( "PixelSize = %d, only support 32; 16; 8; 4 bit.\n", pixelSize );
       exit(0);
    }
    
@@ -935,10 +1022,11 @@ image_data decode_pict( const char *sfile ) {
 
    FILE *pict_fp;
    image_data duLieuAnhPICT;
+   duLieuAnhPICT.pixelSize = 0;
    duLieuAnhPICT.width = 0;
    duLieuAnhPICT.height = 0;
    
-   ColorTable color_table;  // only for 8 bit image
+   ColorTable color_table;  // only for 8; 4 bit image
    color_table.arrayColorSpec = NULL;
    
    printf( "docPICT: TenTep %s\n", sfile );
@@ -1076,6 +1164,12 @@ image_data decode_pict( const char *sfile ) {
          if( ftell( pict_fp ) & 1 )
             fgetc(pict_fp);
       }
+      else if( opCode == OP_CODE__LONG_COMMENT ) {
+         unsigned short type = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short size = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         // ---- skip
+         fseek( pict_fp, size, SEEK_CUR );
+      }
       
       if( opCode == 0xffff )
          opCode = OP_CODE__END;
@@ -1103,6 +1197,9 @@ image_data decode_pict( const char *sfile ) {
       read_data_compression_rle__scanline_16bit( pict_fp, &chunk_list, &duLieuAnhPICT );
    else if( duLieuAnhPICT.pixelSize == 8 )
       read_data_compression_rle__scanline_8bit( pict_fp, &chunk_list, &duLieuAnhPICT, &color_table );
+   else if( duLieuAnhPICT.pixelSize == 4 )
+      read_data_compression_rle__scanline_4bit( pict_fp, &chunk_list, &duLieuAnhPICT, &color_table );
+
    
    // ---- close file
       fclose( pict_fp );
