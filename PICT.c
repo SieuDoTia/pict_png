@@ -544,14 +544,14 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
          // ---- get value for pixel's color data
          unsigned short tableIndex = uncompressed_buffer[bufferIndex];
    
-         unsigned char red = color_table->arrayColorSpec[tableIndex].red;
-         unsigned char green = color_table->arrayColorSpec[tableIndex].green;
-         unsigned char blue = color_table->arrayColorSpec[tableIndex].blue;
+         unsigned short red = color_table->arrayColorSpec[tableIndex].red;
+         unsigned short green = color_table->arrayColorSpec[tableIndex].green;
+         unsigned short blue = color_table->arrayColorSpec[tableIndex].blue;
          
          // ---- use convert method from Imaging With QuickDraw 1994 page 4-17
-         image_data->channel_R[channelDataIndex] = red;
-         image_data->channel_G[channelDataIndex] = green;
-         image_data->channel_B[channelDataIndex] = blue;
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
          image_data->channel_O[channelDataIndex] = 0xff;
          
          bufferIndex++;
@@ -1042,7 +1042,7 @@ image_data decode_pict( const char *sfile ) {
          // ---- PixData (scan line)
          read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
          
-         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
+//         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
          
          // ---- giữ số lượng byte chẵn
          if( ftell( pict_fp ) & 1 )
