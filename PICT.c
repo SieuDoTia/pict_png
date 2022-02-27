@@ -6,7 +6,7 @@
  
 Image data after head
    (10 bytes)
-   2 bytes  | ushort | FILE_SIZE   | File size
+   2 bytes  | ushort | FILE_SIZE   | File size - never use this number
    2 bytes  | ushort | LEFT        | Left coordinate
    2 bytes  | ushort | TOP         | Top coordinate
    2 bytes  | ushort | RIGHT       | Right coordinate
@@ -40,11 +40,17 @@ Image data after head
    2 bytes | ushort | PICTURE FINISH
  */
 
+/* Phiên Bản 1.0 for 1 bit image
+ 
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "PICT.h"
 #include "PNG.h"
+
+#define kFILE_TYPE__VERSION_1    0x1101
 
 #define kFILE_TYPE__VERSION_2    0x0011
 #define kVERSION_CODE__VERSION_2 0x02ff
@@ -52,32 +58,46 @@ Image data after head
 #define kPICT  1
 #define kPNG   2
 
-// ---- op code list
-#define OP_CODE__NO_OP   0x0000     // +0
-#define OP_CODE__CLIP    0x0001     // +Region
-#define OP_CODE__BK_PAT  0x0002   // +8
+// ==== op code list   Phiên Bản 1.0
+#define OP_CODE_1__NO_OP   0x00     // 0
+#define OP_CODE_1__CLIP_REGION 0x01
 
-#define OP_CODE__FILL_PAT  0x000A   // +8
-#define OP_CODE__ORIGIN    0x000C   // +4
-#define OP_CODE__FG_COLOR  0x000E   // +4
-#define OP_CODE__BK_COLOR  0x000F   // +4
+#define OP_CODE_1__SHORT_COMMENT 0xa0 // 2
 
-#define OP_CODE__LINE      0x0020   // +8
-#define OP_CODE__FRAME_RECT 0x0030   // +8
-#define OP_CODE__PAINT_RECT 0x0031   // +8
+#define OP_CODE_1__PACK_BITS_RECT 0x98   // cho bit image
 
-#define OP_CODE__FRAME_RRECT 0x0040   // +8
-#define OP_CODE__PAINT_RRECT 0x0041   // +8
+#define OP_CODE_1__END     0xff     // 0
 
-#define OP_CODE__BITS_RECT      0x0090   // +???
-#define OP_CODE__PACK_BITS_RECT 0x0098   // cho RGB
+// ==== op code list   Phiên Bản 2.0
+#define OP_CODE_2__NO_OP   0x0000     // 0
+#define OP_CODE_2__CLIP    0x0001     // Region
+#define OP_CODE_2__BK_PAT  0x0002     // 8
 
-#define OP_CODE__DIRECT_BITS_RECT 0x009a   // cho RGB
-#define OP_CODE__DIRECT_BITS_RGN  0x009b   // cho RGB
+#define OP_CODE_2__FILL_PAT  0x000A   // 8
+#define OP_CODE_2__ORIGIN    0x000C   // 4
+#define OP_CODE_2__FG_COLOR  0x000E   // 4
+#define OP_CODE_2__BK_COLOR  0x000F   // 4
 
-#define OP_CODE__LONG_COMMENT  0x00a1   // +4+dữ liệu
+#define OP_CODE_2__RGB_FGCOLOR  0x001A   // 6
 
-#define OP_CODE__END     0x00ff   // +0
+#define OP_CODE_2__LINE      0x0020    // 8
+#define OP_CODE_2__SHORT_LINE   0x0022   // 6
+#define OP_CODE_2__SHORT_LINE_FROM   0x0023   // 2
+#define OP_CODE_2__FRAME_RECT 0x0030   // 8
+#define OP_CODE_2__PAINT_RECT 0x0031   // 8
+
+#define OP_CODE_2__FRAME_RRECT 0x0040   // 8
+#define OP_CODE_2__PAINT_RRECT 0x0041   // 8
+
+#define OP_CODE_2__BITS_RECT      0x0090   // ???
+#define OP_CODE_2__PACK_BITS_RECT 0x0098   // cho RGB image
+
+#define OP_CODE_2__DIRECT_BITS_RECT 0x009a   // cho RGB image
+#define OP_CODE_2__DIRECT_BITS_RGN  0x009b   // cho RGB image
+
+#define OP_CODE_2__LONG_COMMENT  0x00a1   // 4+dữ liệu
+
+#define OP_CODE_2__END     0x00ff    // 0
 
 
 typedef enum {
@@ -130,36 +150,6 @@ typedef struct {
 } ColorTable;
 
 
-void luuAnhKongNen( char *tenTep, image_data *anh, unsigned char kieuDuLieu, unsigned short thoiGianKetXuat );
-
-void luuAnhRLE( char *tenTep, image_data *anh, unsigned char kieuDuLieu, unsigned short thoiGianKetXuat );
-
-#pragma mark ---- Read Attributes
-/*pict_attributes readAttributes( FILE *pict_fp ) {
-   
-   pict_attributes attributes;
-
-   // ---- skip file size
-   fgetc(pict_fp);
-   fgetc(pict_fp);
-
-   // ---- image coordinates
-   unsigned short left = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-   unsigned short top = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-   unsigned short right = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-   unsigned short bottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-
-   // ---- width
-   attributes.width = right - left;
-   
-   // ---- height
-   attributes.height = bottom - top;
-   
-   // ---- ASSUME RLE
-   attributes.compression = PICT_COMPRESSION_RLE;
-
-   return attributes;
-} */
 
 #pragma mark ---- Create Chunk Table
 chunk_data create_chunk_table( unsigned int table_length ) {
@@ -398,8 +388,8 @@ void read_data_compression_rle__scanline_32bit( FILE *pict_fp, chunk_data *chunk
       // ---- address for copy in channel
       unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
    
-      unsigned int uncompressed_buffer_index = 0;
-      while( uncompressed_buffer_index < num_columns ) {
+      unsigned int column_index = 0;
+      while( column_index < num_columns ) {
          image_data->channel_R[channelDataIndex] = uncompressed_buffer[bufferIndexR];
          image_data->channel_G[channelDataIndex] = uncompressed_buffer[bufferIndexG];
          image_data->channel_B[channelDataIndex] = uncompressed_buffer[bufferIndexB];
@@ -413,8 +403,8 @@ void read_data_compression_rle__scanline_32bit( FILE *pict_fp, chunk_data *chunk
          bufferIndexG++;
          bufferIndexB++;
          bufferIndexO++;
-         uncompressed_buffer_index++;
-
+         
+         column_index++;
          channelDataIndex++;
       }
 
@@ -473,8 +463,8 @@ void read_data_compression_rle__scanline_16bit( FILE *pict_fp, chunk_data *chunk
       // ---- address for copy in channel
       unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
       
-      unsigned int uncompressed_buffer_index = 0;
-      while( uncompressed_buffer_index < num_columns ) {
+      unsigned int column_index = 0;
+      while( column_index < num_columns ) {
          unsigned short pixel16bit = uncompressed_buffer[bufferIndex] << 8 | uncompressed_buffer[bufferIndex+1];
          unsigned char red = (pixel16bit >> 10) & 0x1f;
          unsigned char green = (pixel16bit >> 5) & 0x1f;
@@ -488,7 +478,7 @@ void read_data_compression_rle__scanline_16bit( FILE *pict_fp, chunk_data *chunk
 
          bufferIndex += 2;
 
-         uncompressed_buffer_index++;
+         column_index++;
          channelDataIndex++;
       }
       
@@ -507,7 +497,7 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
    unsigned int num_rows = image_data->height;
    
    unsigned short componentCount = image_data->componentCount;
-   unsigned int uncompressed_data_length = num_columns << 1;  //16 bit
+   unsigned int uncompressed_data_length = num_columns;  // 8 bit
    
    char *compressed_buffer = malloc( uncompressed_data_length << 1 );
    unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
@@ -541,8 +531,8 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
       // ---- address for copy in channel
       unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
       
-      unsigned int uncompressed_buffer_index = 0;
-      while( uncompressed_buffer_index < num_columns ) {
+      unsigned int column_index = 0;
+      while( column_index < num_columns ) {
          // ---- get value for pixel's color data
          unsigned short tableIndex = uncompressed_buffer[bufferIndex];
    
@@ -550,7 +540,7 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
          unsigned short green = color_table->arrayColorSpec[tableIndex].green;
          unsigned short blue = color_table->arrayColorSpec[tableIndex].blue;
          
-         // ---- convert for 8 bit channel
+         // ---- convert 16 bit color for 8 bit channel
          image_data->channel_R[channelDataIndex] = red >> 8;
          image_data->channel_G[channelDataIndex] = green >> 8;
          image_data->channel_B[channelDataIndex] = blue >> 8;
@@ -558,7 +548,7 @@ void read_data_compression_rle__scanline_8bit( FILE *pict_fp, chunk_data *chunk_
          
          bufferIndex++;
          
-         uncompressed_buffer_index++;
+         column_index++;
          channelDataIndex++;
       }
       
@@ -576,7 +566,7 @@ void read_data_compression_rle__scanline_4bit( FILE *pict_fp, chunk_data *chunk_
    unsigned int num_rows = image_data->height;
    
    unsigned short componentCount = image_data->componentCount;
-   unsigned int uncompressed_data_length = num_columns << 1;  //16 bit
+   unsigned int uncompressed_data_length = num_columns >> 1;  // 4 bit
    
    char *compressed_buffer = malloc( uncompressed_data_length << 1 );
    unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
@@ -610,11 +600,11 @@ void read_data_compression_rle__scanline_4bit( FILE *pict_fp, chunk_data *chunk_
       // ---- address for copy in channel
       unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
       
-      unsigned int uncompressed_buffer_index = 0;
-      while( uncompressed_buffer_index < num_columns ) {
+      unsigned int column_index = 0;
+      while( column_index < num_columns ) {
          // ---- get value for pixel's color data
          unsigned char tableIndex = uncompressed_buffer[bufferIndex];
-         // ---- two pixel index in each byte (4 bit)
+         // ---- 2 pixel in each byte (4 bit)
          unsigned char indexPixel0 = tableIndex >> 4;
          unsigned char indexPixel1 = tableIndex & 0x0f;
          
@@ -623,30 +613,328 @@ void read_data_compression_rle__scanline_4bit( FILE *pict_fp, chunk_data *chunk_
          unsigned short green = color_table->arrayColorSpec[indexPixel0].green;
          unsigned short blue = color_table->arrayColorSpec[indexPixel0].blue;
          
-         // ---- convert for 8 bit channel
+         // ---- convert 16 bit color for 8 bit channel
          image_data->channel_R[channelDataIndex] = red >> 8;
          image_data->channel_G[channelDataIndex] = green >> 8;
          image_data->channel_B[channelDataIndex] = blue >> 8;
          image_data->channel_O[channelDataIndex] = 0xff;
          channelDataIndex++;
+         column_index++;
 
          // ==== pixel 1
          red = color_table->arrayColorSpec[indexPixel1].red;
          green = color_table->arrayColorSpec[indexPixel1].green;
          blue = color_table->arrayColorSpec[indexPixel1].blue;
 
-         // ---- convert for 8 bit channel
+         // ---- convert 16 bit color for 8 bit channel
          image_data->channel_R[channelDataIndex] = red >> 8;
          image_data->channel_G[channelDataIndex] = green >> 8;
          image_data->channel_B[channelDataIndex] = blue >> 8;
          image_data->channel_O[channelDataIndex] = 0xff;
          channelDataIndex++;
-         bufferIndex++;
+         column_index++;
          
-         uncompressed_buffer_index += 2;
+         bufferIndex++;
+
 
       }
       
+      chunk_number++;
+   }
+   
+   // ---- free memory
+   free( compressed_buffer );
+   free( uncompressed_buffer );
+}
+
+// no test because no can find 2 bit PICT image
+void read_data_compression_rle__scanline_2bit( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data, ColorTable *color_table ) {
+   
+   unsigned int num_columns = image_data->width;
+   unsigned int num_rows = image_data->height;
+   
+   unsigned short componentCount = image_data->componentCount;
+   unsigned int uncompressed_data_length = num_columns;  // 8 bit
+   
+   char *compressed_buffer = malloc( uncompressed_data_length << 1 );
+   unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
+   if( compressed_buffer == NULL ) {
+      printf( "Problem create compressed buffer\n" );
+      exit(0);
+   }
+   
+   if( uncompressed_buffer == NULL ) {
+      printf( "Problem create uncompressed buffer\n" );
+      exit(0);
+   }
+   
+   unsigned short chunk_number = 0;
+   while( chunk_number < chunk_data->num_chunks ) {
+      // ---- begin chunk
+      fseek( pict_fp, chunk_data->chunk_table_position[chunk_number], SEEK_SET );
+      
+      // ---- read data length
+      unsigned int data_length = chunk_data->chunk_size[chunk_number];
+      
+      // ---- read compressed data
+      fread( compressed_buffer, 1, data_length, pict_fp );
+      
+      // ---- uncompress rle data
+      uncompress_rle( compressed_buffer, data_length, uncompressed_buffer, uncompressed_data_length );
+      
+      // ---- address for component data from umcopressed buffer
+      unsigned int bufferIndex = 0;
+      
+      // ---- address for copy in channel
+      unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
+      
+      unsigned int column_index = 0;
+      while( column_index < num_columns ) {
+         // ---- get value for pixel's color data
+         unsigned char tableIndex = uncompressed_buffer[bufferIndex];
+         // ---- 4 pixel in each byte (2 bit)
+         unsigned char indexPixel0 = tableIndex >> 6;
+         unsigned char indexPixel1 = (tableIndex >> 4) & 0x03;
+         unsigned char indexPixel2 = (tableIndex >> 2) & 0x03;
+         unsigned char indexPixel3 = tableIndex & 0x03f;
+
+         // ==== pixel 0
+         unsigned short red = color_table->arrayColorSpec[indexPixel0].red;
+         unsigned short green = color_table->arrayColorSpec[indexPixel0].green;
+         unsigned short blue = color_table->arrayColorSpec[indexPixel0].blue;
+         
+         // ---- convert 16 bit color for 8 bit channel
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+         
+         // ==== pixel 1
+         red = color_table->arrayColorSpec[indexPixel1].red;
+         green = color_table->arrayColorSpec[indexPixel1].green;
+         blue = color_table->arrayColorSpec[indexPixel1].blue;
+         
+         // ---- convert 16 bit color for 8 bit channel
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+
+         // ==== pixel 2
+         red = color_table->arrayColorSpec[indexPixel2].red;
+         green = color_table->arrayColorSpec[indexPixel2].green;
+         blue = color_table->arrayColorSpec[indexPixel2].blue;
+         
+         // ---- convert 16 bit color for 8 bit channel
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+         
+         // ==== pixel 3
+         red = color_table->arrayColorSpec[indexPixel3].red;
+         green = color_table->arrayColorSpec[indexPixel3].green;
+         blue = color_table->arrayColorSpec[indexPixel3].blue;
+
+         // ---- convert 16 bit color for 8 bit channel
+         image_data->channel_R[channelDataIndex] = red >> 8;
+         image_data->channel_G[channelDataIndex] = green >> 8;
+         image_data->channel_B[channelDataIndex] = blue >> 8;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+         
+         bufferIndex++;
+         column_index += 4;
+         
+      }
+      
+      chunk_number++;
+   }
+   
+   // ---- free memory
+   free( compressed_buffer );
+   free( uncompressed_buffer );
+}
+
+// no test because no can find 2 bit PICT image
+void read_data_compression_rle__scanline_1bit( FILE *pict_fp, chunk_data *chunk_data, image_data *image_data ) {
+   
+   unsigned int num_columns = image_data->width;
+   unsigned int num_rows = image_data->height;
+   
+   unsigned short componentCount = image_data->componentCount;
+   unsigned int uncompressed_data_length = num_columns;  // 8 bit
+   
+   char *compressed_buffer = malloc( uncompressed_data_length << 1 );
+   unsigned char *uncompressed_buffer = malloc( uncompressed_data_length );
+   if( compressed_buffer == NULL ) {
+      printf( "Problem create compressed buffer\n" );
+      exit(0);
+   }
+   
+   if( uncompressed_buffer == NULL ) {
+      printf( "Problem create uncompressed buffer\n" );
+      exit(0);
+   }
+   
+   unsigned short chunk_number = 0;
+   while( chunk_number < chunk_data->num_chunks ) {
+      // ---- begin chunk
+      fseek( pict_fp, chunk_data->chunk_table_position[chunk_number], SEEK_SET );
+      
+      // ---- read data length
+      unsigned int data_length = chunk_data->chunk_size[chunk_number];
+      
+      // ---- read compressed data
+      fread( compressed_buffer, 1, data_length, pict_fp );
+      
+      // ---- uncompress rle data
+      uncompress_rle( compressed_buffer, data_length, uncompressed_buffer, uncompressed_data_length );
+      
+      // ---- address for component data from umcopressed buffer
+      unsigned int bufferIndex = 0;
+      
+      // ---- address for copy in channel
+      unsigned int channelDataIndex = num_columns*(num_rows - 1 - chunk_number);
+      
+      unsigned int column_index = 0;
+      while( column_index < num_columns ) {
+         // ---- get value for pixel's color data
+         unsigned char bitByte = uncompressed_buffer[bufferIndex];
+         unsigned char pixel = 0;
+         
+         // ---- pixel 0
+         unsigned char black = bitByte & 0x80;
+         if( black )
+            pixel = 0;
+         else
+            pixel = 0xff;
+   
+         image_data->channel_R[channelDataIndex] = pixel;
+         image_data->channel_G[channelDataIndex] = pixel;
+         image_data->channel_B[channelDataIndex] = pixel;
+         image_data->channel_O[channelDataIndex] = 0xff;
+         channelDataIndex++;
+         column_index++;
+         
+         // ---- pixel 1
+         if( column_index < num_columns ) {
+            black = bitByte & 0x40;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+            
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+         column_index++;
+         
+         // ---- pixel 2
+         if( column_index < num_columns ) {
+            black = bitByte & 0x20;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+         column_index++;
+         
+         // ---- pixel 3
+         if( column_index < num_columns ) {
+            black = bitByte & 0x10;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+         column_index++;
+         
+         // ---- pixel 4
+         if( column_index < num_columns ) {
+            black = bitByte & 0x08;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+         column_index++;
+         
+         // ---- pixel 5
+         if( column_index < num_columns ) {
+            black = bitByte & 0x04;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+         column_index++;
+         
+         // ---- pixel 6
+         if( column_index < num_columns ) {
+            black = bitByte & 0x02;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+         column_index++;
+         
+         // ---- pixel 7
+         if( column_index < num_columns ) {
+            black = bitByte & 0x01;
+            if( black )
+               pixel = 0;
+            else
+               pixel = 0xff;
+            
+            image_data->channel_R[channelDataIndex] = pixel;
+            image_data->channel_G[channelDataIndex] = pixel;
+            image_data->channel_B[channelDataIndex] = pixel;
+            image_data->channel_O[channelDataIndex] = 0xff;
+            channelDataIndex++;
+         }
+
+         column_index++;
+         bufferIndex++;
+      }
+
       chunk_number++;
    }
    
@@ -993,8 +1281,8 @@ unsigned short opCodePixMap_read( FILE *pict_fp, image_data *duLieuAnhPICT ) {
    //   pixelSize   2 bytes (bits: 1; 2; 4; 8; 16; 32 bits)
    unsigned short pixelSize = fgetc(pict_fp) << 8 | fgetc(pict_fp);
    duLieuAnhPICT->pixelSize = pixelSize;
-   if( (pixelSize < 4) ) {
-      printf( "PixelSize = %d, only support 32; 16; 8; 4 bit.\n", pixelSize );
+   if( (pixelSize < 2) ) {
+      printf( "PixelSize = %d, only support 32; 16; 8; 4; 2 bit.\n", pixelSize );
       exit(0);
    }
    
@@ -1017,57 +1305,27 @@ unsigned short opCodePixMap_read( FILE *pict_fp, image_data *duLieuAnhPICT ) {
    return rowBytes;
 }
 
-#pragma mark ---- Decode PICT
-image_data decode_pict( const char *sfile ) {
-
-   FILE *pict_fp;
-   image_data duLieuAnhPICT;
-   duLieuAnhPICT.pixelSize = 0;
-   duLieuAnhPICT.width = 0;
-   duLieuAnhPICT.height = 0;
+#pragma mark ---- Decode PICT 1
+chunk_data decode_pict_1( FILE *pict_fp, image_data *duLieuAnhPICT, ColorTable *color_table ) {
    
-   ColorTable color_table;  // only for 8; 4 bit image
-   color_table.arrayColorSpec = NULL;
-   
-   printf( "docPICT: TenTep %s\n", sfile );
-   
-   /* open pict using filename */
-   pict_fp = fopen(sfile, "rb");
-   
-   if (!pict_fp) {
-      printf("%-15.15s: Error open exr file: %s\n","read_exr",sfile);
-      exit(0);
-   }
-
-   // ---- skip 512 byte head
-   fseek( pict_fp, 512 + 10, SEEK_SET );
-   
-   // ---- read file type and version
-   unsigned short fileType = 0x0;
-   unsigned short version = 0x0;
-   fileType = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-   version = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-
-   if( (fileType != kFILE_TYPE__VERSION_2) || (version != kVERSION_CODE__VERSION_2 ) ) {
-      printf( "%-15.15s: For PICT 2.0: Wrong file type 0x%02x and version code 0x%02x\n", sfile, kFILE_TYPE__VERSION_2, kVERSION_CODE__VERSION_2 );
-      printf( "%s is not a valid PICT 2.0 file", sfile);
-      return duLieuAnhPICT;
-   }
+   // ---- only 1 bit for PICT version 1.0
+   duLieuAnhPICT->pixelSize = 1;
    
    chunk_data chunk_list;
 
-   // ---- read op code list
-   fseek( pict_fp, 512 + 40, SEEK_SET );
-   
-   unsigned short opCode = OP_CODE__NO_OP;
+   unsigned char opCode = OP_CODE_1__NO_OP;
    unsigned char readClip = 0;
    
-   while( (opCode != OP_CODE__END) && !feof(pict_fp) ) {
-      // ---- get op code
-      opCode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-      printf( "opcode %04x\n", opCode );
-
-      if( opCode == OP_CODE__CLIP ) {
+   while( (opCode != OP_CODE_1__END) && !feof(pict_fp) ) {
+      // ---- get op code (1 byte)
+      opCode = fgetc(pict_fp);
+      printf( "opcode %02x\n", opCode );
+      
+      if( opCode == OP_CODE_1__SHORT_COMMENT ) {
+         // ---- skip
+         fseek( pict_fp, 2, SEEK_CUR );
+      }
+      else if( opCode == OP_CODE_1__CLIP_REGION ) {
          unsigned short size = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          
          if( readClip ) {
@@ -1081,39 +1339,155 @@ image_data decode_pict( const char *sfile ) {
             unsigned short frameRight = fgetc(pict_fp) << 8 | fgetc(pict_fp);
             
             if( frameRight > frameLeft )
-               duLieuAnhPICT.width = frameRight - frameLeft;
+               duLieuAnhPICT->width = frameRight - frameLeft;
             else
-               duLieuAnhPICT.width = frameLeft - frameRight;
+               duLieuAnhPICT->width = frameLeft - frameRight;
             
             if( frameBottom > frameTop )
-               duLieuAnhPICT.height = frameBottom - frameTop;
+               duLieuAnhPICT->height = frameBottom - frameTop;
             else
-               duLieuAnhPICT.height = frameTop - frameBottom;
-            printf( "Frame %d %d %d %d\n", frameTop, frameLeft, frameBottom, frameRight );
-            printf( "Image size %d %d\n", duLieuAnhPICT.width, duLieuAnhPICT.height );
-            chunk_list = create_chunk_table( duLieuAnhPICT.height );
+               duLieuAnhPICT->height = frameTop - frameBottom;
             
             readClip = 1;
          }
 
       }
-      else if( opCode == OP_CODE__FRAME_RRECT ) {
+      else if( opCode == OP_CODE_1__PACK_BITS_RECT ) {
+         // ---- bitMap version 1 (?? bytes)
+         unsigned short rowBytes = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         printf( "rowBytes %d\n", rowBytes );
+         if( rowBytes == 0 ) {
+            rowBytes = (duLieuAnhPICT->width * duLieuAnhPICT->pixelSize) >> 3;
+            printf( "   rowBytes %d\n", rowBytes );
+         }
+         
+         // ---- source rect
+         unsigned short rectSourceTop = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short rectSourceLeft = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short rectSourceBottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short rectSourceRight = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         printf( "rectSource %d %d %d %d\n", rectSourceTop, rectSourceLeft, rectSourceBottom, rectSourceRight );
+         
+         if( rectSourceRight > rectSourceLeft )
+            duLieuAnhPICT->width = rectSourceRight - rectSourceLeft;
+         else
+            duLieuAnhPICT->width = rectSourceLeft - rectSourceRight;
+         
+         if( rectSourceBottom > rectSourceTop )
+            duLieuAnhPICT->height = rectSourceBottom - rectSourceTop;
+         else
+            duLieuAnhPICT->height = rectSourceTop - rectSourceBottom;
+
+         // ---- dest rect (8 byte)
+         
+         // ---- bounds rect (8 byte)
+         
+         // ---- mode (2 byte)
+
+         // ---- bitMap (scan line)
+         fseek( pict_fp, 18, SEEK_CUR );
+         
+         printf( "  Image size %d %d\n", duLieuAnhPICT->width, duLieuAnhPICT->height );
+         chunk_list = create_chunk_table( duLieuAnhPICT->height );
+
+         read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
+         
+//         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
+         // ---- giữ số lượng byte chẵn
+         if( ftell( pict_fp ) & 1 )
+            fputc( 0x00, pict_fp );
+      }
+
+      
+   }
+   
+   return chunk_list;
+}
+
+#pragma mark ---- Decode PICT 2
+chunk_data decode_pict_2( FILE *pict_fp, image_data *duLieuAnhPICT, ColorTable *color_table ) {
+   
+   // ---- start read version 2.0 op code here
+   fseek( pict_fp, 512 + 40, SEEK_SET );
+   
+   chunk_data chunk_list;
+   
+   unsigned short opCode = OP_CODE_2__NO_OP;
+   unsigned char readClip = 0;
+   
+   while( (opCode != OP_CODE_2__END) && !feof(pict_fp) ) {
+      // ---- get op code (2 bytes)
+      opCode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+      printf( "opcode %04x\n", opCode );
+      
+      if( opCode == OP_CODE_2__CLIP ) {
+         unsigned short size = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         
+         if( readClip ) {
+            // ---- skip
+            fseek( pict_fp, size - 2, SEEK_CUR );
+         }
+         else {
+            unsigned short frameTop = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+            unsigned short frameLeft = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+            unsigned short frameBottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+            unsigned short frameRight = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+            
+            if( frameRight > frameLeft )
+               duLieuAnhPICT->width = frameRight - frameLeft;
+            else
+               duLieuAnhPICT->width = frameLeft - frameRight;
+            
+            if( frameBottom > frameTop )
+               duLieuAnhPICT->height = frameBottom - frameTop;
+            else
+               duLieuAnhPICT->height = frameTop - frameBottom;
+
+            printf( "  Image size %d %d\n", duLieuAnhPICT->width, duLieuAnhPICT->height );
+            chunk_list = create_chunk_table( duLieuAnhPICT->height );
+            
+            readClip = 1;
+         }
+         
+      }
+      else if( opCode == OP_CODE_2__FRAME_RRECT ) {
          // ---- skip
          fseek( pict_fp, 8, SEEK_CUR );
       }
-      else if( opCode == OP_CODE__PACK_BITS_RECT ) {
+      else if( opCode == OP_CODE_2__RGB_FGCOLOR ) {
+         // ---- 3 x 16 bit colors
+         unsigned short fg_red = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short fg_green = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         unsigned short fg_blue = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         printf( " rgb fgcolor %04x %04x %04x\n", fg_red, fg_green, fg_blue );
+      }
+      else if( opCode == OP_CODE_2__SHORT_LINE ) {
+         // ---- 3 x (∆x; ∆y) coordinate
+         short xStart = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         short yStart = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+         char xChange = fgetc(pict_fp);
+         char yChange = fgetc(pict_fp);
+         printf( " start line from (%d; %d) to (%d; %d)\n", xStart, yStart, xChange, yChange );
+      }
+      else if( opCode == OP_CODE_2__SHORT_LINE_FROM ) {
+         // ---- (x; y) coordinate - reverse order
+         char y = fgetc(pict_fp);
+         char x = fgetc(pict_fp);
+         printf( " short line from (%d; %d)\n", x, y );
+      }
+      else if( opCode == OP_CODE_2__PACK_BITS_RECT ) {
          // ---- pixMap (50 bytes)
-         unsigned short rowBytes = opCodePixMap_read( pict_fp, &duLieuAnhPICT );
+         unsigned short rowBytes = opCodePixMap_read( pict_fp, duLieuAnhPICT );
          printf( "rowBytes %d\n", rowBytes );
          if( rowBytes == 0 ) {
-            rowBytes = (duLieuAnhPICT.width * duLieuAnhPICT.pixelSize) >> 3;
-         printf( "   rowBytes %d\n", rowBytes );
+            rowBytes = (duLieuAnhPICT->width * duLieuAnhPICT->pixelSize) >> 3;
+            printf( "   rowBytes %d\n", rowBytes );
          }
-
+         
          // ---- color table
          fseek( pict_fp, -4, SEEK_CUR );  // phải trở lại 4 byte, chưa hiểu rỏ tại sao
-         colorTable_read( pict_fp, &color_table );
-
+         colorTable_read( pict_fp, color_table );
+         
          // ---- source rect
          unsigned short rectSourceTop = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceLeft = fgetc(pict_fp) << 8 | fgetc(pict_fp);
@@ -1130,41 +1504,41 @@ image_data decode_pict( const char *sfile ) {
          // ---- PixData (scan line)
          read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
          
-//         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
+         //         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
          
          // ---- giữ số lượng byte chẵn
          if( ftell( pict_fp ) & 1 )
             fgetc(pict_fp);
          
       }
-      else if( opCode == OP_CODE__DIRECT_BITS_RECT ) {
-
+      else if( opCode == OP_CODE_2__DIRECT_BITS_RECT ) {
+         
          // ---- pixMap (50 bytes)
-         unsigned short rowBytes = opCodePixMap_read( pict_fp, &duLieuAnhPICT );
-  
+         unsigned short rowBytes = opCodePixMap_read( pict_fp, duLieuAnhPICT );
+         
          // ---- source rect (8 byte)
          unsigned short rectSourceTop = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceLeft = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceBottom = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short rectSourceRight = fgetc(pict_fp) << 8 | fgetc(pict_fp);
-//        printf( "rectSource %d %d %d %d ftell %d\n", rectSourceTop, rectSourceLeft, rectSourceBottom, rectSourceRight, ftell( pict_fp ) );
-
+         //        printf( "rectSource %d %d %d %d ftell %d\n", rectSourceTop, rectSourceLeft, rectSourceBottom, rectSourceRight, ftell( pict_fp ) );
+         
          // ---- dest rect (8 byte)
          
          // ---- mode (2 byte)
          fseek( pict_fp, 8, SEEK_CUR );
          unsigned short mode = fgetc(pict_fp) << 8 | fgetc(pict_fp);
- 
+         
          // ---- PixData (scan line)
          read_chunk_data( pict_fp, &chunk_list, rectSourceTop, rectSourceBottom - rectSourceTop, rowBytes > 250 );
          
-//         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
-
+         //         printChunkTable( &chunk_list, rectSourceBottom - rectSourceTop );
+         
          // ---- giữ số lượng byte chẵn
          if( ftell( pict_fp ) & 1 )
             fgetc(pict_fp);
       }
-      else if( opCode == OP_CODE__LONG_COMMENT ) {
+      else if( opCode == OP_CODE_2__LONG_COMMENT ) {
          unsigned short type = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          unsigned short size = fgetc(pict_fp) << 8 | fgetc(pict_fp);
          // ---- skip
@@ -1172,10 +1546,65 @@ image_data decode_pict( const char *sfile ) {
       }
       
       if( opCode == 0xffff )
-         opCode = OP_CODE__END;
+         opCode = OP_CODE_2__END;
    }
+
+   return chunk_list;
+}
+
+#pragma mark ---- Decode PICT
+image_data decode_pict( const char *sfile ) {
+
+   FILE *pict_fp = NULL;
+   image_data duLieuAnhPICT;
+   duLieuAnhPICT.pixelSize = 0;
+   duLieuAnhPICT.width = 0;
+   duLieuAnhPICT.height = 0;
    
-   // ---- create buffers for image data
+   unsigned short fileType = 0;
+   
+   // ---- color table for 8; 4; 2 bit image
+   ColorTable color_table;  // only for 8; 4 bit image
+   color_table.arrayColorSpec = NULL;
+   
+   // ---- chunk list
+   chunk_data chunk_list;
+   
+   printf( "docPICT: TenTep %s\n", sfile );
+   
+   /* open pict using filename */
+   pict_fp = fopen(sfile, "rb");
+   
+   if (!pict_fp) {
+      printf(" Error open PICT file: %s\n", sfile );
+      exit(0);
+   }
+
+   // ---- skip 512 byte head
+   fseek( pict_fp, 512 + 10, SEEK_SET );
+   
+   // ---- read file type and version
+   unsigned short version = 0x0;
+   fileType = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+   version = fgetc(pict_fp) << 8 | fgetc(pict_fp);
+
+   if( (fileType == kFILE_TYPE__VERSION_2) && (version == kVERSION_CODE__VERSION_2) ) {
+      printf( "  PICT 2.0 file\n" );
+      chunk_list = decode_pict_2( pict_fp, &duLieuAnhPICT, &color_table );
+   }
+   else if( fileType == kFILE_TYPE__VERSION_1 ) {
+      printf( "  PICT 1.0 file\n" );
+      // ---- start read version 2.0 op code here
+      fseek( pict_fp, -2, SEEK_CUR );  // reverse 2 bytes because read version
+      chunk_list = decode_pict_1( pict_fp, &duLieuAnhPICT, &color_table );
+   }
+   else {
+      printf( "Wrong file type 0x%04x and version code 0x%04x\n", fileType, version );
+      printf( "%s is not PICT file", sfile);
+      exit(0);
+   }
+
+   // ---- create buffers for load image data and convert become 32 bit
    unsigned int beDaiDem = duLieuAnhPICT.width*duLieuAnhPICT.height;  // uchar
    printf( " beDaiDem %d\n", beDaiDem );
 
@@ -1199,6 +1628,10 @@ image_data decode_pict( const char *sfile ) {
       read_data_compression_rle__scanline_8bit( pict_fp, &chunk_list, &duLieuAnhPICT, &color_table );
    else if( duLieuAnhPICT.pixelSize == 4 )
       read_data_compression_rle__scanline_4bit( pict_fp, &chunk_list, &duLieuAnhPICT, &color_table );
+   else if( duLieuAnhPICT.pixelSize == 2 )
+      read_data_compression_rle__scanline_2bit( pict_fp, &chunk_list, &duLieuAnhPICT, &color_table );
+   else if( duLieuAnhPICT.pixelSize == 1 )
+      read_data_compression_rle__scanline_1bit( pict_fp, &chunk_list, &duLieuAnhPICT );
 
    
    // ---- close file
