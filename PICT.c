@@ -210,7 +210,7 @@ void printChunkTable( chunk_data *chunk_data, unsigned int table_length ) {
 }
 
 
-#pragma mark ----- RLE Compress
+#pragma mark ----- RLE Uncompress
 void uncompress_rle( char *compressed_buffer, int compressed_buffer_length, unsigned char *uncompressed_buffer, int uncompressed_buffer_length) {
    
    // ---- while not finish all in buffer

@@ -2,7 +2,7 @@ CC=clang
 
 list = PNG.o PICT.o
 
-EXR_channel: $(list)
+pict_png: $(list)
 	$(CC) -o pict_png -lz $(list)
 
 # ====
